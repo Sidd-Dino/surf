@@ -1056,7 +1056,11 @@ newwindow(Client *c, const Arg *a, int noembed)
 void
 spawn(Client *c, const Arg *a)
 {
-	if (fork() == 0) {
+	const pid_t pid = fork();
+
+	if (pid < 0) {
+		fprintf(stderr, "spawn : fork() failed\n");
+	} else if (pid == 0) {
 		if (dpy)
 			close(ConnectionNumber(dpy));
 		close(spair[0]);
@@ -1066,6 +1070,8 @@ spawn(Client *c, const Arg *a)
 		fprintf(stderr, "%s: execvp %s", argv0, ((char **)a->v)[0]);
 		perror(" failed");
 		exit(1);
+	} else {
+		waitpid(pid, NULL, 0);
 	}
 }
 
