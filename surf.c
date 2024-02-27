@@ -107,6 +107,7 @@ typedef struct Client {
 	WebKitWebInspector *inspector;
 	WebKitFindController *finder;
 	WebKitHitTestResult *mousepos;
+	WebKitWebsiteDataManager *datamanager;
 	GTlsCertificate *cert, *failedcert;
 	GTlsCertificateFlags tlserr;
 	Window xid;
@@ -802,7 +803,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		webkit_settings_set_default_font_size(c->settings, a->i);
 		return; /* do not update */
 	case FrameFlattening:
+		/* Deprecated
 		webkit_settings_set_enable_frame_flattening(c->settings, a->i);
+		*/
 		break;
 	case Geolocation:
 		refresh = 0;
@@ -815,7 +818,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		webkit_settings_set_enable_developer_extras(c->settings, a->i);
 		return; /* do not update */
 	case Java:
+		/* Deprecated
 		webkit_settings_set_enable_java(c->settings, a->i);
+		*/
 		return; /* do not update */
 	case JavaScript:
 		webkit_settings_set_enable_javascript(c->settings, a->i);
@@ -857,7 +862,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case SpellLanguages:
 		return; /* do nothing */
 	case StrictTLS:
-		webkit_web_context_set_tls_errors_policy(c->context, a->i ?
+		webkit_website_data_manager_set_tls_errors_policy(c->datamanager, a->i ?
 		    WEBKIT_TLS_ERRORS_POLICY_FAIL :
 		    WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		break;
@@ -982,7 +987,7 @@ evalscript(Client *c, const char *jsstr, ...)
 	script = g_strdup_vprintf(jsstr, ap);
 	va_end(ap);
 
-	webkit_web_view_run_javascript(c->view, script, NULL, NULL, NULL);
+	webkit_web_view_evaluate_javascript(c->view, script, -1, NULL, NULL, NULL, NULL, NULL);
 	g_free(script);
 }
 
@@ -1056,7 +1061,12 @@ newwindow(Client *c, const Arg *a, int noembed)
 void
 spawn(Client *c, const Arg *a)
 {
-	if (fork() == 0) {
+	const pid_t pid = fork();
+
+	if (pid < 0) {
+		fprintf(stderr, "spawn : fork to child failed");
+		exit(1);
+	} else if (pid == 0) {
 		if (dpy)
 			close(ConnectionNumber(dpy));
 		close(spair[0]);
@@ -1066,6 +1076,8 @@ spawn(Client *c, const Arg *a)
 		fprintf(stderr, "%s: execvp %s", argv0, ((char **)a->v)[0]);
 		perror(" failed");
 		exit(1);
+	} else {
+		wait(NULL);
 	}
 }
 
@@ -1111,6 +1123,7 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitWebContext *context;
 	WebKitCookieManager *cookiemanager;
 	WebKitUserContentManager *contentmanager;
+	WebKitWebsiteDataManager *datamanager;
 
 	/* Webview */
 	if (rv) {
@@ -1152,23 +1165,32 @@ newview(Client *c, WebKitWebView *rv)
 
 		if (curconfig[Ephemeral].val.i) {
 			context = webkit_web_context_new_ephemeral();
+			datamanager = webkit_website_data_manager_new_ephemeral();
 		} else {
+			datamanager = webkit_website_data_manager_new(
+			                  "base-cache-directory", cachedir,
+			                  "base-data-directory", cachedir,
+			                  NULL);
 			context = webkit_web_context_new_with_website_data_manager(
-			          webkit_website_data_manager_new(
-			          "base-cache-directory", cachedir,
-			          "base-data-directory", cachedir,
-			          NULL));
+			          datamanager);
 		}
 
 
 		cookiemanager = webkit_web_context_get_cookie_manager(context);
 
-		/* rendering process model, can be a shared unique one
-		 * or one for each view */
+		/* Deprecated
+		 * since 2.26, the only allowed process model is
+		 * WEBKIT_PROCESS_MODEL_MULTIPLE_SECONDARY_PROCESSES,
+		 * so this function does nothing.
+		 *
+		 * rendering process model, can be a shared unique one
+		 * or one for each view
 		webkit_web_context_set_process_model(context,
 		    WEBKIT_PROCESS_MODEL_MULTIPLE_SECONDARY_PROCESSES);
+		*/
+
 		/* TLS */
-		webkit_web_context_set_tls_errors_policy(context,
+		webkit_website_data_manager_set_tls_errors_policy(datamanager,
 		    curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL :
 		    WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		/* disk cache */
@@ -1234,6 +1256,7 @@ newview(Client *c, WebKitWebView *rv)
 
 	c->context = context;
 	c->settings = settings;
+	c->datamanager = datamanager;
 
 	setparameter(c, 0, DarkMode, &curconfig[DarkMode].val);
 
@@ -1438,10 +1461,6 @@ createwindow(Client *c)
 		w = gtk_plug_new(embed);
 	} else {
 		w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-
-		wmstr = g_path_get_basename(argv0);
-		gtk_window_set_wmclass(GTK_WINDOW(w), wmstr, "Surf");
-		g_free(wmstr);
 
 		wmstr = g_strdup_printf("%s[%"PRIu64"]", "Surf", c->pageid);
 		gtk_window_set_role(GTK_WINDOW(w), wmstr);
@@ -1678,8 +1697,7 @@ decidenavigation(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
 	default:
 		/* Do not navigate to links with a "_blank" target (popup) */
-		if (webkit_navigation_policy_decision_get_frame_name(
-		    WEBKIT_NAVIGATION_POLICY_DECISION(d))) {
+		if (webkit_navigation_action_get_frame_name(a)) {
 			webkit_policy_decision_ignore(d);
 		} else {
 			/* Filter out navigation to different domain ? */
