@@ -239,6 +239,7 @@ static void togglefullscreen(Client *c, const Arg *a);
 static void togglecookiepolicy(Client *c, const Arg *a);
 static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
+static void savesource(Client *c, const Arg *a);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
@@ -307,6 +308,85 @@ static ParamName loadfinished[] = {
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
+
+void
+savesource_file_set_contents(char *buffer, char *file)
+{
+	char *dump, *dname, *bname, *temp;
+
+	if (g_strcmp0(file, "") == 0) {
+		fprintf(stderr, "savesource() : file name is empty\n");
+		return;
+	}
+
+	dname = g_path_get_dirname(file);
+	bname = g_path_get_basename(file);
+
+	if (dname[0] == '~')
+		temp = untildepath(dname);
+	else
+		temp = g_strdup(dname);
+
+	if (g_mkdir_with_parents(temp, 0700) < 0) {
+		fprintf(stderr, "Could not access directory - %s\n", temp);
+		return;
+	}
+
+	dname = realpath(temp, NULL);
+	g_free(temp);
+
+	dump = g_build_filename(dname, bname, NULL);
+	g_free(dname);
+	g_free(bname);
+
+	if (!g_file_set_contents_full(dump, buffer, -1,
+	    G_FILE_SET_CONTENTS_CONSISTENT, 0600, NULL))
+		fprintf(stderr, "Unable to open file - %s\n", dump);
+	g_free(dump);
+}
+
+void
+savesource_resource_finished(GObject *o, GAsyncResult *r, gpointer f)
+{
+	guchar *buffer = webkit_web_resource_get_data_finish(
+	                     WEBKIT_WEB_RESOURCE(o), r, NULL, NULL); 
+	if (buffer)
+		savesource_file_set_contents(buffer, (char *)f);
+
+	g_free(buffer);
+}
+
+void
+savesource_javascript_finished(GObject *o, GAsyncResult *r, gpointer f)
+{
+	char *buffer;
+	JSCValue *value  = webkit_web_view_evaluate_javascript_finish(
+	                       WEBKIT_WEB_VIEW(o), r, NULL);
+	if (!value)
+		return;
+
+	if (jsc_value_is_string(value)) {
+		buffer = jsc_value_to_string(value);
+		savesource_file_set_contents(buffer, (char *)f);
+		g_free(buffer);
+	}
+}
+
+void
+savesource(Client *c, const Arg *a)
+{
+	WebKitWebResource *r;
+	if (curconfig[JavaScript].val.i) {
+		webkit_web_view_evaluate_javascript(
+		    c->view, "window.document.documentElement.outerHTML", -1,
+		    NULL, NULL, NULL, savesource_javascript_finished, (gpointer)a->v);
+	} else {
+		r = webkit_web_view_get_main_resource(c->view);
+		if (r)
+			webkit_web_resource_get_data(r, NULL,
+			    savesource_resource_finished, (gpointer)a->v);
+	}
+}
 
 void
 die(const char *errstr, ...)
